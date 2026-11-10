@@ -1,0 +1,9 @@
+# Pinned versions verified in Phase 1 (Python 3.13). Later phases add only what they need.
+# CPU-only torch (smaller download):  pip install torch==2.15.0 --index-url https://download.pytorch.org/whl/cpu
+torch==2.15.0
+numpy==2.5.3
+h5py==3.16.0
+PyYAML==6.0.3
+pytest==9.1.1
+matplotlib==3.11.2   # Phase 5 plots
+pillow==12.3.0   # predict.py: reading user crown images (also a matplotlib dependency)

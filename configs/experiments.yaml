@@ -1,0 +1,24 @@
+# Experiment plan for Phase 6. Every entry is a set of overrides on configs/default.yaml.
+# 1) `variants` are trained and evaluated; the final model is the variant with the best
+#    VALIDATION macro-F1 (test sites are never used for selection).
+# 2) `ablations` are applied on top of the selected final variant.
+select_by: val_macro_f1
+
+variants:
+  baseline:                         # model exactly as specified (Phases 1-5)
+    data: {hsi_aug: {enabled: false}, rgb_aug: {enabled: false}}
+  spectral_aug:                     # + train-time cross-site spectral / brightness augmentation
+    data: {hsi_aug: {enabled: true}, rgb_aug: {enabled: true}}
+  spectral_aug_bnorm:               # + per-pixel spectral brightness normalization
+    data: {hsi_brightness_norm: true, hsi_aug: {enabled: true}, rgb_aug: {enabled: true}}
+
+ablations:
+  no_quality_estimator: {model: {use_quality_estimator: false}}   # masked-mean fusion
+  no_contrastive: {loss: {w_contrastive: 0.0}}
+  no_modality_dropout: {train: {modality_dropout: {enabled: false}}}
+
+# 3) Seed check: retrain the final model and its most important ablation with extra training
+#    seeds (same site split) to estimate run-to-run noise.
+seed_check:
+  seeds: [1, 2]
+  runs: [final, no_quality_estimator]

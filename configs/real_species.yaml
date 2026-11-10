@@ -1,0 +1,102 @@
+# Real-species demo config: 20 real species / 10 NEON sites, demo_tree_crowns.h5 layout
+# (data from scripts/make_real_species_data.py; measurements are SYNTHETIC).
+# All paths are relative to the project root unless absolute.
+
+seed: 42
+
+paths:
+  data_file: data/real_species_tree_crowns.h5   # demo_tree_crowns layout
+  output_dir: outputs/real_species
+  norm_stats: outputs/real_species/norm_stats.json
+
+# Synthetic demo dataset generator (used only when no real data file is present).
+synthetic:
+  num_samples: 2000
+  num_species: 167
+  num_sites: 16
+  rgb_size: 64            # RGB crop H = W (10 cm GSD -> 6.4 m crown window)
+  hsi_size: 12            # HSI crop H = W (1 m GSD)
+  hsi_bands: 369          # after removing water-absorption bands
+  lidar_points: 1024      # max points stored per crown (NaN padded)
+  long_tail_alpha: 1.1    # Zipf exponent for species frequency (NEON is long-tailed)
+  p_missing_rgb: 0.03     # fraction of crowns with a fully missing sensor
+  p_missing_hsi: 0.05
+  p_missing_lidar: 0.05
+  p_degraded: 0.20        # fraction of crowns with a degraded (noisy/sparse/blurred) sensor
+  p_nodata_pixels: 0.02   # random -9999 nodata pixels in HSI
+
+data:
+  format: demo_crowns     # rgb 3x32x32 / hsi 369x8x8 / lidar height raster 1x32x32
+  hsi_scale: 10000.0      # NEON reflectance stored as int16 * 10000
+  hsi_nodata: -9999
+  lidar_num_points: 512   # points fed to the model (random subsample / pad)
+  lidar_min_points: 16    # fewer valid points -> LiDAR treated as missing
+  hsi_min_valid_frac: 0.25  # fewer valid HSI pixels -> HSI treated as missing
+  batch_size: 32
+  num_workers: 0
+  augment: true
+  # --- Phase 6: cross-site robustness. Defaults = the selected FINAL model ('spectral_aug').
+  # Set both *_aug.enabled to false for the baseline exactly as specified in Phases 1-5.
+  hsi_brightness_norm: false   # divide each pixel spectrum by its mean reflectance (train + eval)
+  hsi_aug: {enabled: true, gain_sigma: 0.15, tilt_sigma: 0.05, offset_sigma: 0.005}   # train only
+  rgb_aug: {enabled: true, gain_sigma: 0.15, channel_sigma: 0.03}                     # train only
+  max_train_samples: null # cap for quick runs / smoke test (seeded subset); null = all
+  max_eval_samples: null
+
+split:
+  mode: stratified        # 'stratified' (per species) or 'site' (whole sites held out)
+  # Site-held-out split. Either list sites explicitly, or leave empty to pick
+  # sites at random (seeded) until each fraction of *samples* is reached.
+  test_sites: []
+  val_sites: []
+  test_frac: 0.15
+  val_frac: 0.15
+  seed: 42                # split seed, kept fixed when the training seed varies
+
+model:
+  embed_dim: 128          # shared embedding size of all three encoders
+  dropout: 0.1
+  rgb_widths: [32, 64, 128, 256]
+  hsi_reduced: 64         # learned band compression 369 -> 64
+  hsi_spatial_width: 128
+  hsi_spectral_channels: [16, 32, 64]
+  lidar_widths: [64, 128, 256]
+  # --- Phase 3: quality estimator, fusion, heads
+  use_quality_estimator: true   # false -> plain masked-mean fusion (ablation)
+  quality_hidden: 128
+  evidence_activation: exp     # exp (clamped) | softplus
+  trust_gamma: 1.0              # sharpness of trust weighting: w ∝ (trust + eps)^gamma
+  detach_trust: true            # trust trained only by the evidential loss
+  head_dropout: 0.2
+  proj_dim: 128                 # contrastive projection size
+
+loss:
+  w_cls: 1.0                    # focal classification
+  w_contrastive: 0.2            # cross-modal InfoNCE (set 0 for the 'no contrastive' ablation)
+  w_aux: 0.2                    # height / crown-diameter regression
+  w_evidential: 0.5             # trains the quality estimator
+  focal_gamma: 2.0
+  label_smoothing: 0.0
+  class_balanced_alpha: false   # extra CB-α in focal (off: the sampler already balances classes)
+  cb_beta: 0.999
+  evidential_anneal_epochs: 10
+  contrastive_temperature: 0.1
+  contrastive_exclude_same_class: true   # don't treat same-species trees as negatives
+  evidential_kl_max: 0.1        # annealed KL weight for the evidential loss
+
+train:
+  epochs: 40
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  warmup_epochs: 2
+  grad_clip: 5.0
+  device: auto            # auto | cuda | cpu
+  amp: false              # mixed precision (CUDA only)
+  sampler: class_balanced # class_balanced | shuffle
+  sampler_power: 0.5      # p(sample) ∝ n_class^-power
+  select_metric: val_macro_f1
+  early_stop_patience: 10
+  modality_dropout:
+    enabled: true         # false for the 'no modality dropout' ablation
+    p_apply: 0.5          # fraction of samples that get dropout
+    p_drop: [0.4, 0.4, 0.4]  # per-sensor drop prob. [rgb, hsi, lidar]; last sensor never dropped

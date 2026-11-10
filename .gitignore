@@ -1,0 +1,11 @@
+# data files are large and can be regenerated (scripts/make_*_data.py)
+data/*.h5
+# training / evaluation outputs (recreated by the scripts)
+outputs/
+results/eval_test/
+predictions*/
+test_output.txt
+# Python caches
+__pycache__/
+.pytest_cache/
+*.pyc

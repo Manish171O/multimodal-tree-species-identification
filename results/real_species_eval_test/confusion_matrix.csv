@@ -1,0 +1,21 @@
+true\pred,Red maple,Sugar maple,Northern red oak,White oak,Turkey oak,American beech,Yellow birch,Tulip poplar,Sweetgum,Black gum,Quaking aspen,Eastern white pine,Eastern hemlock,Balsam fir,Longleaf pine,Loblolly pine,Engelmann spruce,Lodgepole pine,Douglas-fir,Western hemlock
+Red maple,39,1,0,2,0,0,2,0,8,4,0,0,0,0,0,0,0,0,0,0
+Sugar maple,1,6,0,0,0,4,0,0,1,0,0,0,0,0,0,0,0,0,0,0
+Northern red oak,0,1,20,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+White oak,0,1,5,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Turkey oak,0,0,0,0,4,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0
+American beech,1,4,0,0,0,7,0,0,2,0,0,0,0,0,0,0,0,0,0,0
+Yellow birch,0,0,0,0,0,0,8,0,1,0,0,0,0,0,0,0,0,0,0,0
+Tulip poplar,0,0,0,0,0,0,0,11,0,0,0,0,0,0,0,0,0,0,0,0
+Sweetgum,5,2,0,0,0,0,2,0,4,0,0,0,0,0,0,0,0,0,0,0
+Black gum,4,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0
+Quaking aspen,0,0,0,0,0,0,0,0,0,0,11,0,0,0,0,0,0,0,0,0
+Eastern white pine,0,0,0,0,0,0,0,0,0,0,0,13,1,0,0,0,0,0,0,0
+Eastern hemlock,0,0,0,0,0,0,0,0,0,0,0,3,7,2,0,0,0,0,0,1
+Balsam fir,0,0,0,0,0,0,0,0,0,0,0,0,1,5,0,0,0,0,0,0
+Longleaf pine,0,0,0,0,0,0,0,0,0,0,0,0,0,0,14,0,0,1,0,0
+Loblolly pine,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,19,0,1,0,0
+Engelmann spruce,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,12,0,0,0
+Lodgepole pine,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,10,0,0
+Douglas-fir,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,16,2
+Western hemlock,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,7,9
