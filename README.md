@@ -1,299 +1,423 @@
-# Adaptive Quality-Aware Multimodal Deep Learning for Robust Tree Species Identification
+# Multimodal Tree Species Identification
 
-A PyTorch research codebase that classifies **167 tree species** from three airborne sensors —
-**RGB** imagery, **hyperspectral** (369 bands) and **LiDAR** point clouds. For every tree, it learns
-**how much to trust each sensor**. It stays usable when a sensor is missing, and it is evaluated on
-**sites it has never seen**.
+**Adaptive quality-aware deep learning that identifies tree species from airborne RGB, hyperspectral and LiDAR data.**
 
-> ### ⚠ Data notice
-> No real NEON file was available, so this repo ships a clearly labelled **synthetic** generator,
-> `src/data/synthetic.py`. It produces data in a NEON Multi-Modal Tree Crown–like HDF5 layout, and every
-> file carries `synthetic=True`. It reproduces the hard parts of the real problem:
-> - a long-tailed species distribution
-> - look-alike species within each genus
-> - per-site illumination and spectral calibration shifts
-> - missing sensors
-> - degraded sensors (haze, blur, sparse returns)
-> - `-9999` / NaN values
->
-> All reported numbers therefore show that the **pipeline works and how its parts interact**. They are
-> **not** real-world accuracy. To use real data, write it in the layout documented at the top of
-> `src/data/synthetic.py` and point `paths.data_file` at it. Nothing else changes.
+The model looks at each tree crown through three sensors, learns how much to trust each sensor for that tree, and predicts:
 
-## Results at a glance
+- the **species** (with a top-5 ranking and confidence),
+- the tree's **height** in metres,
+- the **crown diameter** in metres.
 
-Site-held-out test set: **MLBS, STEI, WREF (423 crowns)**. The final model (`spectral_aug`) was chosen on
-**validation** macro-F1. Full tables are in [`results/RESULTS.md`](results/RESULTS.md) and raw numbers in `results/summary.json`.
-A self-contained visual summary is in `results/results_page.html`; open it in any browser.
+It keeps working when a sensor is missing or degraded, and it is evaluated on trees (and forest sites) it never saw during training.
 
-| | Baseline (as specified) | **Final model** (+ cross-site spectral augmentation) |
+![Example prediction card](results/figures/prediction_card_example.png)
+
+---
+
+## Contents
+
+1. [Highlights](#highlights)
+2. [About the data](#about-the-data)
+3. [Quick start](#quick-start)
+4. [Predicting tree species](#predicting-tree-species)
+5. [How the model works](#how-the-model-works)
+6. [Results](#results)
+7. [Datasets](#datasets)
+8. [Training and evaluation](#training-and-evaluation)
+9. [Reproducing all experiments](#reproducing-all-experiments)
+10. [Project structure](#project-structure)
+11. [Tests](#tests)
+12. [Limitations and future work](#limitations-and-future-work)
+
+---
+
+## Highlights
+
+- **Three sensors, one model.** A separate neural network encodes each sensor: an RGB camera, a 369-band hyperspectral camera and LiDAR.
+- **Per-tree sensor trust.** An evidential "quality estimator" scores how reliable each sensor is for every tree, and the fusion step weights the sensors by that score.
+- **Robust to missing sensors.** Sensors are switched off at random during training (modality dropout), so the model still works with one or two sensors.
+- **Fair evaluation.** Test trees are never used for training or model selection. A site-held-out split tests whole forests the model has never seen.
+- **Ready-made demo.** `scripts/predict.py` produces a visual HTML report with one prediction card per tree.
+- **Reproducible.** All settings live in YAML configs, seeds are fixed, and 111 automated tests cover every component.
+
+---
+
+## About the data
+
+No real NEON airborne file was available for this project, so the repository includes two data generators that simulate realistic sensor data:
+
+- **Real-species dataset** (`scripts/make_real_species_data.py`): 2,000 crowns of **20 real North American tree species** at **10 real NEON field sites**. Species names, families and site ranges are real. Heights, crown shapes, colours and spectra are realistic hand-set values, not measurements.
+- **Research dataset** (`scripts/make_synthetic_data.py`): 2,000 crowns of **167 species** at 16 sites in a NEON Multi-Modal Tree Crown–like layout, used for the main research experiments and ablations.
+
+Both include the difficulties of real data: rare species, look-alike species, lighting differences between sites, missing sensors, degraded sensors and invalid values.
+
+The reported numbers therefore show that the method works and how its parts interact. To use real data, convert it to one of the documented layouts and set `paths.data_file` in the config. No code changes are needed.
+
+---
+
+## Quick start
+
+### 1. Install
+
+Python 3.12 is recommended.
+
+```bash
+git clone https://github.com/Manish171O/multimodal-tree-species-identification.git
+cd multimodal-tree-species-identification
+
+python -m venv .venv
+# Windows:      .venv\Scripts\activate
+# macOS/Linux:  source .venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+For an NVIDIA GPU, install the CUDA build of PyTorch 2.15.0 from [pytorch.org](https://pytorch.org/get-started/locally/). The code uses the GPU automatically.
+
+### 2. Create the data
+
+The data files are not stored in the repository because of their size. The generators are seeded, so they recreate exactly the same data in about 10 seconds each.
+
+```bash
+python scripts/make_real_species_data.py
+python scripts/make_synthetic_data.py
+```
+
+### 3. Check that everything works
+
+```bash
+python -m pytest
+```
+
+All 111 tests should pass in about a minute on a CPU.
+
+### 4. Run a prediction
+
+```bash
+python scripts/predict.py
+```
+
+This predicts 8 test trees and opens the report in your browser.
+
+---
+
+## Predicting tree species
+
+`scripts/predict.py` uses the trained model in `results/real_species_model.pt`.
+
+### Common commands
+
+| Command | What it does |
+|---|---|
+| `python scripts/predict.py` | Predicts 8 random test trees |
+| `python scripts/predict.py --random 20` | Predicts 20 random test trees |
+| `python scripts/predict.py --per-species 1` | One test tree of each of the 20 species |
+| `python scripts/predict.py --random 301` | All 301 test trees |
+| `python scripts/predict.py --index 5 17 301` | Specific trees by row number |
+| `python scripts/predict.py --drop lidar` | Same, with the LiDAR sensor removed |
+| `python scripts/predict.py --per-species 1 --drop hsi lidar` | Every species using RGB only |
+| `python scripts/predict.py --export-examples examples` | Saves test trees as image and `.npy` files |
+
+Use `--out FOLDER` to write a report to a different folder.
+
+### Predicting from your own files
+
+You can give any combination of the three sensors:
+
+```bash
+python scripts/predict.py --rgb examples/crown_1_rgb.png --hsi examples/crown_1_hsi.npy --lidar examples/crown_1_lidar.npy
+python scripts/predict.py --rgb my_crown.png
+```
+
+| Sensor | Expected input |
+|---|---|
+| RGB | PNG, JPG or `.npy` image centred on one crown, about 16 m across (resized to 32 × 32) |
+| Hyperspectral | `.npy` array of 369 bands × height × width (or a single 369-band spectrum), as reflectance |
+| LiDAR | `.npy` canopy-height raster in metres (resized to 32 × 32) |
+
+The `examples/` folder contains six ready-made test trees to try.
+
+### Output
+
+| Output | Contents |
+|---|---|
+| Terminal | Top-5 species with probabilities, predicted and true height and crown diameter, trust per sensor |
+| `predictions/report.html` | Summary figures, trees-per-species table, table of all predictions and one card per tree |
+| `predictions/cards/*.png` | One prediction card per tree |
+| `predictions/predictions.csv` | All predictions in a spreadsheet-friendly format |
+
+Each card shows the RGB image, the LiDAR height map, the hyperspectral spectrum, the top-5 species, the predicted height and crown diameter, and the weight given to each sensor.
+
+---
+
+## How the model works
+
+```
+ RGB image      ──►  RGB encoder (CNN)            ──►  128 numbers ─┐
+ Hyperspectral  ──►  HSI encoder (spectral CNN)   ──►  128 numbers ─┼──►  trust per sensor  ──►  weighted fusion
+ LiDAR          ──►  LiDAR encoder (PointNet)     ──►  128 numbers ─┘                               │
+                                                                                                   ├──►  species (top-5)
+                                                                                                   └──►  height, crown diameter
+```
+
+1. **Encoders.** Each sensor is turned into a 128-number summary by its own network.
+2. **Quality estimator.** For each sensor, a small evidential network measures how much evidence that sensor provides. Little evidence means low trust. A missing sensor gets a trust of zero.
+3. **Adaptive fusion.** The three summaries are combined as a weighted average, with weights proportional to trust.
+4. **Heads.** One head predicts the species. A second head predicts height and crown diameter.
+5. **Training.** The loss combines four parts:
+   - focal loss for species, with class-balanced sampling so rare species are not ignored,
+   - a cross-modal contrastive loss that pulls the three sensor summaries of the same tree together,
+   - an evidential loss that trains the trust scores,
+   - a regression loss for height and crown diameter.
+
+   Sensors are randomly hidden during training (modality dropout).
+
+| Component | File |
+|---|---|
+| Encoders | `src/models/encoders.py` |
+| Quality estimator (trust) | `src/models/quality.py` |
+| Adaptive fusion | `src/models/fusion.py` |
+| Species and structure heads | `src/models/heads.py` |
+| Full model | `src/models/model.py` |
+| Losses | `src/losses/` |
+| Training loop, sampler, modality dropout | `src/training/` |
+
+---
+
+## Results
+
+### Real-species model (20 species)
+
+The model was trained on 1,398 trees, tuned on 301 and tested on 301 unseen trees. The split was stratified by species, so every species appears in each part.
+
+| Metric | Result |
+|---|---|
+| Species accuracy | **74.4%** (random guessing: 5%) |
+| Macro-F1 | 0.739 |
+| True species in the top 5 | **99.7%** |
+| Height error (mean) | **0.90 m** (R² 0.98) |
+| Crown-diameter error (mean) | **0.25 m** (R² 0.99) |
+
+Accuracy with sensors removed (all 301 test trees):
+
+| Sensors used | Accuracy |
+|---|---|
+| All three | 74% |
+| Without RGB | 71% |
+| Without hyperspectral | 70% |
+| Without LiDAR | 59% |
+
+With **whole forest sites held out** (SCBI and SERC never seen in training), species accuracy is 59.4%. This shows how much harder it is to generalise to a new forest.
+
+Per-species F1 ranges from 1.00 (tulip poplar, quaking aspen) to 0.28 (sweetgum). Most errors are between similar-looking species, such as red maple and sweetgum, or eastern and western hemlock.
+
+### Research experiments (167 species, site-held-out)
+
+These results come from the main experiment pipeline. Test sites are MLBS, STEI and WREF (423 trees). The final model was chosen on validation data only. Full tables are in [`results/RESULTS.md`](results/RESULTS.md), and `results/results_page.html` is a visual summary.
+
+| Metric | Baseline | Final model |
 |---|---|---|
 | Test accuracy | 0.693 | **0.846** (3 seeds: 0.849 ± 0.009) |
-| Test macro-F1 / weighted-F1 | 0.508 / 0.716 | **0.570 / 0.842** |
+| Test macro-F1 | 0.508 | **0.570** |
 | Accuracy, species seen in training | 0.757 | **0.925** |
-| Accuracy with one sensor missing (mean of 3) | 0.604 | **0.769** |
-| HSI-only accuracy | 0.279 | **0.593** |
-| ECE | 0.063 | 0.066 |
-| Height / crown-diameter MAE | 2.11 m / 0.44 m | **1.74 m / 0.31 m** (R² 0.93 / 0.98) |
+| Accuracy with one sensor missing | 0.604 | **0.769** |
+| Hyperspectral-only accuracy | 0.279 | **0.593** |
+| Height / crown-diameter error | 2.11 m / 0.44 m | **1.74 m / 0.31 m** |
 
 ![Variants and ablations](results/figures/comparison.png)
 
 ### What the experiments show
 
-1. **Cross-site spectral shift was the main failure, and augmentation fixes it.**
-   - In the baseline, removing HSI *raised* test accuracy (0.693 → 0.747). The hyperspectral branch had
-     learned site-specific brightness and calibration.
-   - Train-time spectral gain/tilt/offset augmentation plus RGB brightness jitter fixes this:
-     - val macro-F1 0.372 → 0.559
-     - test accuracy +15 points
-     - HSI now helps (dropping it costs 7.8 points)
-     - HSI-only accuracy doubles
-   - Adding per-pixel brightness normalization on top did not help (val 0.531), so it was not selected.
-2. **Modality dropout is what makes missing sensors survivable.** Without it:
-   - one-missing-sensor accuracy falls by 3.3 points and macro-F1 by 5.1 points
-   - LiDAR-only accuracy falls from 0.567 to 0.461
-   - In exchange, calibration with all sensors present is better (ECE 0.041 vs 0.066).
-3. **The evidential trust scores are informative, but they did not improve accuracy on this data.**
-   - **Built-in degradations:** trust spots hazy HSI almost perfectly (AUROC 0.99), cutting HSI's fusion weight from 0.47 to 0.05.
-   - **Unseen test-time noise:** it cuts the weight on noisy RGB and HSI from ~0.34 to 0.20 and 0.15.
-   - **Where it fails:** blurred RGB and sparse LiDAR (AUROC ≈ 0.5), and it slightly *raises* the weight on jittered LiDAR.
-   - **Accuracy vs plain masked-mean fusion over 3 seeds:**
-     - test accuracy 0.849 ± 0.009 vs 0.848 ± 0.021
-     - mean accuracy under corruption 0.797 vs 0.800
-   - So the gain is interpretability: a per-tree, per-sensor reliability score. A follow-up would need to show an accuracy benefit
-     on real data, where sensor failures are more varied.
-4. **The cross-modal contrastive loss had no measurable effect** (val macro-F1 +0.007 without it, within seed noise).
-5. **Long tail and open set.** Every species with ≥ 10 training crowns reaches test F1 ≥ 0.67.
-   - The 17 test species that never occur at training sites score F1 = 0 by construction.
-   - That's why results are reported both on all trees and on seen species.
+1. **Lighting differences between sites were the main problem.**
+   - In the baseline, removing the hyperspectral sensor actually *raised* accuracy, because that branch had learned each site's lighting.
+   - Random brightness and colour changes during training fixed this and raised test accuracy by 15 points.
 
-| Missing sensors (test acc.) | all | −RGB | −HSI | −LiDAR | LiDAR only | HSI only | RGB only |
-|---|---|---|---|---|---|---|---|
-| Baseline | 0.693 | 0.574 | 0.747 | 0.489 | 0.539 | 0.279 | 0.537 |
-| **Final** | **0.846** | 0.775 | 0.768 | 0.764 | 0.567 | 0.593 | 0.624 |
-| Final, no modality dropout | 0.853 | 0.766 | 0.749 | 0.693 | 0.461 | 0.530 | 0.551 |
+2. **Modality dropout makes missing sensors survivable.**
+   - Without it, accuracy with one sensor missing falls by 3.3 points.
+   - LiDAR-only accuracy falls from 0.567 to 0.461.
 
-<p float="left">
-<img src="results/figures/missing_sensors.png" width="49%" alt="Missing sensors">
-<img src="results/figures/final_trust_weights.png" width="40%" alt="Trust weights">
-</p>
-<p float="left">
-<img src="results/figures/final_reliability.png" width="34%" alt="Reliability diagram">
-<img src="results/figures/final_per_species_f1.png" width="45%" alt="Per-species F1">
-</p>
+3. **The trust scores explain the model, but did not improve accuracy on this data.**
+   - They detect hazy hyperspectral images almost perfectly (AUROC 0.99) and cut that sensor's weight from 0.47 to 0.05.
+   - They do not detect blurred RGB or sparse LiDAR.
+   - Over three seeds, plain averaging reaches the same accuracy (0.848 ± 0.021 vs 0.849 ± 0.009).
 
+4. **The contrastive loss had no measurable effect.**
 
-## Real-species demo dataset (`demo_tree_crowns.h5` layout)
+5. **Unseen species cannot be recognised.** 17 test species never occur at the training sites, so results are also reported on species seen in training.
 
-`scripts/make_real_species_data.py` writes a **synthetic** dataset that uses **real species and NEON site
-names**, in exactly the layout of the reference file `demo_tree_crowns.h5`. Every key, dtype and per-sample
-shape matches, and the extra descriptive attributes don't change the layout:
-
-| key | shape | dtype | content |
-|---|---|---|---|
-| `rgb` | (N, 3, 32, 32) | uint8 | reflectance × 255, 0.5 m pixels (16 m window) |
-| `hsi` | (N, 369, 8, 8) | float16 | reflectance 380–2510 nm, 2 m pixels |
-| `lidar` | (N, 1, 32, 32) | float32 | canopy height model, m |
-| `species`, `site` | (N,) | int64 | indices into `attrs['species_names']`, `attrs['site_names']` |
-| `height`, `crown_diameter` | (N,) | float32 | m |
-| `degraded` | (N, 3) | bool | RGB colour noise / HSI band dropout / sparse LiDAR (≈20 / 15 / 9 %) |
-| `wavelengths` | (369,) | float64 | nm |
-
-The dataset covers **20 species** across **10 NEON sites**:
-- **Broadleaves:** red and sugar maple; northern red, white and turkey oak; American beech; yellow birch;
-  tulip poplar; sweetgum; black gum; quaking aspen.
-- **Conifers:** eastern white, longleaf, loblolly and lodgepole pine; eastern and western hemlock;
-  balsam fir; Engelmann spruce; Douglas-fir.
-- **Sites:** HARV, BART, SCBI, SERC, MLBS, OSBS, TALL, UNDE, NIWO, WREF.
-
-Each species occurs only at sites within its approximate real range (`src/data/species_catalog.py`).
-Crown shapes, heights and spectra differ in realistic directions; for example, conifers are darker with
-lower NIR and conical height profiles. These **traits are plausible hand-set values, not measurements**.
-
-```bash
-python scripts/make_real_species_data.py                       # 2000 crowns → data/real_species_tree_crowns.h5 (~10 s, 83 MB)
-python scripts/make_real_species_data.py --num-samples 1000 --sites HARV BART SCBI SERC UNDE
-```
-
-![Real-species samples](results/figures/real_species_samples.png)
-
-A nearest-centroid classifier on simple features gets 25–41 % on held-out sites (chance 5 %). Its errors
-are botanically sensible (red maple ↔ sweetgum, white ↔ loblolly pine). The training pipeline in this repo
-uses the point-cloud layout of `data/synthetic_neon_mmtc.h5`; training on this layout would need a small
-loader adapter.
-
-## Predict species, height and crown diameter (`scripts/predict.py`)
-
-`results/real_species_model.pt` is a model trained on the real-species dataset (`configs/real_species.yaml`).
-Its scores on 301 held-out test crowns, split per species:
-
-| Metric | Result |
-|---|---|
-| Species accuracy | **74.4 %** |
-| Macro-F1 | 0.739 |
-| True species in the top 5 | 99.7 % |
-| Height error (MAE) | 0.90 m (R² 0.98) |
-| Crown-diameter error (MAE) | 0.25 m (R² 0.99) |
-
-With **whole sites held out** (SCBI + SERC never seen in training), species accuracy is 59.4 %.
-
-```bash
-python scripts/predict.py                                   # 8 random test crowns → predictions/report.html (opens in browser)
-python scripts/predict.py --random 20                       # more crowns
-python scripts/predict.py --index 5 17 301                  # specific crowns
-python scripts/predict.py --drop lidar                      # simulate a missing sensor
-python scripts/predict.py --export-examples examples        # save test crowns as PNG/.npy files ...
-python scripts/predict.py --rgb examples/crown_1_rgb.png --hsi examples/crown_1_hsi.npy --lidar examples/crown_1_lidar.npy
-python scripts/predict.py --rgb my_crown.png                # ... or any subset of your own files
-```
-
-Outputs:
-- **Console:** top-5 species with probabilities, predicted vs true height and crown diameter, and trust per sensor.
-- **`predictions/report.html`:** a self-contained report with summary tiles, whole-test-set reference numbers,
-  a table and one card per crown.
-- **`predictions/cards/*.png`:** one card per crown, showing the RGB view, LiDAR height map, spectrum, top-5 bars and fusion weights.
-- **`predictions/predictions.csv`**
-
-Input format for your own crown, any subset of the three:
-- **RGB:** image centred on one crown, about 16 m across.
-- **Hyperspectral:** a `.npy` array of 369 bands × h × w (or one spectrum), as reflectance.
-- **LiDAR:** a `.npy` canopy-height raster in metres.
-
-The model was trained on simulated data, so real photos are out of distribution and its predictions on them
-aren't meaningful.
-
-![Prediction card](results/figures/prediction_card_example.png)
+![Accuracy with missing sensors](results/figures/missing_sensors.png)
 
 ---
 
-## Reproduce everything
+## Datasets
 
-```bash
-pip install -r requirements.txt     # CPU-only torch: see the comment in requirements.txt
+### Real-species dataset
 
-python -m pytest -v                 # 111 tests, ~60 s on CPU (incl. 2-epoch smoke test)
-python scripts/run_experiments.py   # data → 3 variants → select on val → 3 ablations → 4 extra-seed runs → report
-                                    #   ≈2.5–3 h on a 2-core CPU (minutes on a GPU); results in outputs/experiments/
-```
+Created by `scripts/make_real_species_data.py` and saved as `data/real_species_tree_crowns.h5`.
 
-Individual steps:
-
-```bash
-python scripts/make_synthetic_data.py --config configs/default.yaml   # SYNTHETIC demo data (10 s, 181 MB)
-python scripts/inspect_data.py                                         # groups / keys / shapes / dtypes
-python scripts/train.py --config configs/default.yaml                  # train the final model → outputs/
-python scripts/train.py --set data.hsi_aug.enabled=false data.rgb_aug.enabled=false  # baseline as specified
-python scripts/train.py --resume outputs/last.pt
-python scripts/evaluate.py --checkpoint outputs/best.pt [--split val]  # → outputs/eval_test/
-python scripts/evaluate.py --checkpoint results/final_model_best.pt     # shipped final model (needs the data file)
-python scripts/run_experiments.py --quick                              # 5-min pipeline check
-```
-
-Seeds are fixed (`seed: 42`). The sampler, modality dropout and augmentation are seeded per
-(seed, epoch, sample), so retraining reproduces the same numbers: the Phase-5 checkpoint and the
-re-run `baseline` both score test accuracy 0.6927. The GPU is used automatically if present, and
-mixed precision is available via `train.amp: true`.
-
-## Method
-
-```
- RGB (3×64×64) ──► RGBEncoder (ResNet, GroupNorm) ─────────┐ e_rgb ─► evidential head ─► α_rgb ─► trust t_rgb
- HSI (369×12×12) ─► HSIEncoder (band-compress + spatial ───┤ e_hsi ─► evidential head ─► α_hsi ─► trust t_hsi
-                    conv + attention-pooled 1-D spectral)  │
- LiDAR (512×4) ──► LiDAREncoder (masked PointNet + ────────┘ e_lid ─► evidential head ─► α_lid ─► trust t_lid
-                    height quantiles / spreads)                       │
-                                   modality mask ─────────────────────┤
-                 fused = Σ w_m e_m,  w_m ∝ mask_m (t_m + ε)^γ  ◄──────┘
-                     ├─► species head (167-way) ── focal loss + class-balanced sampler
-                     └─► structure head (height, crown Ø) ── Smooth-L1
-   + cross-modal InfoNCE between projected e_rgb / e_hsi / e_lid of the same tree
-   + modality dropout during training
-```
-
-| Component | File | Key choices |
-|---|---|---|
-| Encoders | `src/models/encoders.py` | Every encoder outputs 128-d. GroupNorm/LayerNorm only, because missing sensors arrive as zeros and would corrupt BatchNorm statistics. The LiDAR encoder is permutation- and padding-invariant (tested). |
-| Quality estimator | `src/models/quality.py` | Per sensor: evidence = exp(clamp(z)), α = evidence + 1, uncertainty u = C/Σα, trust t = (1 − u)·mask. Trained by the evidential loss (`src/losses/evidential.py`): Dirichlet expected cross-entropy plus a KL term annealed over 10 epochs. |
-| Fusion | `src/models/fusion.py` | A missing sensor gets weight exactly 0, so nothing leaks from its input (tested for all 7 sensor subsets). `detach_trust: true` stops the classifier from gaming the trust scores. |
-| Contrastive | `src/losses/contrastive.py` | Symmetric InfoNCE over the 3 sensor pairs, using only trees that have both sensors. Same-species trees are not counted as negatives. |
-| Objective | `src/losses/total.py` | 1.0·focal(γ = 2) + 0.2·InfoNCE + 0.2·structure + 0.5·evidential (all in `loss:`). |
-| Training | `src/training/` | Class-balanced sampling p ∝ n_c^−0.5 and modality dropout: half the trees lose each sensor with p = 0.4, and the last sensor is never dropped. AdamW with warm-up + cosine LR, gradient clipping, early stopping on val macro-F1, checkpoints with resume. |
-| Cross-site robustness | `src/data/dataset.py` | Optional train-time spectral gain/tilt/offset augmentation and RGB brightness jitter (`data.hsi_aug`, `data.rgb_aug`), plus optional per-pixel spectral brightness normalization (`data.hsi_brightness_norm`). |
-
-### Data handling (`src/data/`)
-
-| Sensor | Stored | Invalid values | Normalization (fit on train sites only) |
+| Key | Shape | Type | Content |
 |---|---|---|---|
-| RGB | `(N,3,64,64)` uint8 | all-zero crop ⇒ missing | per-channel z-score |
-| HSI | `(N,369,12,12)` int16 ×10000 | `-9999`, NaN/inf or >1.5 reflectance ⇒ invalid pixel, filled with the band mean; <25 % valid ⇒ missing | per-band z-score |
-| LiDAR | `(N,1024,4)` float32, NaN-padded | non-finite xyz ⇒ point dropped; NaN intensity ⇒ mean; <16 points ⇒ missing | xy recentred and scaled, z & intensity z-scored; 512 points + mask |
+| `rgb` | (N, 3, 32, 32) | uint8 | Colour image, 0.5 m pixels (16 m window) |
+| `hsi` | (N, 369, 8, 8) | float16 | Reflectance from 380 to 2510 nm, 2 m pixels |
+| `lidar` | (N, 1, 32, 32) | float32 | Canopy height model in metres |
+| `species`, `site` | (N,) | int64 | Indices into the `species_names` and `site_names` attributes |
+| `height`, `crown_diameter` | (N,) | float32 | Metres |
+| `degraded` | (N, 3) | bool | Whether RGB, HSI or LiDAR is degraded for this tree |
+| `wavelengths` | (369,) | float64 | Band centres in nm |
 
-**Split:** `src/data/splits.py` puts **whole sites** in train, val or test, never random rows.
-Tests assert that no site appears in two splits.
+**Species (20):**
 
-With seed 42 the split is:
+- **Broadleaves:** red maple, sugar maple, northern red oak, white oak, turkey oak, American beech, yellow birch, tulip poplar, sweetgum, black gum, quaking aspen.
+- **Conifers:** eastern white pine, longleaf pine, loblolly pine, lodgepole pine, eastern hemlock, western hemlock, balsam fir, Engelmann spruce, Douglas-fir.
 
-| Split | Sites | Trees |
+**NEON sites (10):** HARV, BART, SCBI, SERC, MLBS, OSBS, TALL, UNDE, NIWO, WREF.
+
+Each species only occurs at sites within its approximate natural range (see `src/data/species_catalog.py`).
+
+![Real-species samples](results/figures/real_species_samples.png)
+
+Options:
+
+```bash
+python scripts/make_real_species_data.py --num-samples 1000
+python scripts/make_real_species_data.py --sites HARV BART SCBI SERC UNDE
+```
+
+### Research dataset
+
+Created by `scripts/make_synthetic_data.py` and saved as `data/synthetic_neon_mmtc.h5`. It has 2,000 crowns, 167 species and 16 sites.
+
+| Sensor | Stored as | Invalid values | Normalisation |
+|---|---|---|---|
+| RGB | (N, 3, 64, 64) uint8 | All-zero image means missing | Per-channel, fitted on training data |
+| Hyperspectral | (N, 369, 12, 12) int16 × 10000 | `-9999`, NaN or saturated pixels are replaced; under 25% valid means missing | Per-band, fitted on training data |
+| LiDAR | (N, 1024, 4) float32 point cloud | Invalid points are dropped; under 16 points means missing | Centred and scaled; 512 points per tree |
+
+---
+
+## Training and evaluation
+
+### Train
+
+```bash
+# Real-species model (about 8 minutes on a CPU)
+python scripts/train.py --config configs/real_species.yaml
+
+# Research model
+python scripts/train.py --config configs/default.yaml
+
+# Change any setting from the command line
+python scripts/train.py --config configs/real_species.yaml --set train.epochs=20
+
+# Resume a stopped run
+python scripts/train.py --resume outputs/last.pt
+```
+
+Checkpoints (`best.pt`, `last.pt`), logs and metrics are saved in the output folder set in the config.
+
+### Evaluate
+
+```bash
+python scripts/evaluate.py --checkpoint results/real_species_model.pt --out predictions/evaluation
+python scripts/evaluate.py --checkpoint results/final_model_best.pt
+```
+
+The evaluation reports:
+
+- accuracy, top-5 accuracy, precision, recall, macro-F1 and weighted-F1,
+- per-species F1 (`per_species.csv`) and a confusion matrix,
+- expected calibration error (ECE),
+- results with every combination of sensors removed,
+- results with sensors silently corrupted,
+- height and crown-diameter errors,
+- plots in the `plots/` folder.
+
+### Data splits
+
+| Split mode | How it works | Used for |
 |---|---|---|
-| Train | 9 | 1222 |
-| Val | 4 | 355 |
-| Test | MLBS, STEI, WREF | 423 |
+| `stratified` | Each species is split separately: 70% train, 15% validation, 15% test | Real-species model |
+| `site` | Whole forest sites go to train, validation or test | Research model, and the site-held-out comparison |
 
-17 test species (36 trees) never occur at the training sites, so they cannot be predicted. Every metric is
-therefore reported on **all** test trees and again on **seen-species** trees.
+Set the mode with `split.mode` in the config.
 
-## Evaluation (`src/evaluation/`)
+---
 
-- **Classification:** accuracy, top-5, macro/weighted precision, recall and F1, per-species P/R/F1 (`per_species.csv`),
-  confusion matrix, expected calibration error (15 bins), NLL.
-- **Missing sensors:** results for 7 sensor subsets (all; drop each one; each one alone), each with its drop
-  vs all sensors.
-- **Structure and sites:** per-site metrics; height and crown-diameter MAE/RMSE/R².
-- **Silent corruption:** sensors are corrupted at test time but stay marked as present (2σ noise on RGB or HSI; LiDAR
-  jitter with 80 % of points removed). This checks whether fusion re-weights them.
-- **Trust:** trust and fusion weight for clean vs degraded sensors, plus AUROC for spotting a degraded sensor.
-  This uses the synthetic generator's ground-truth degradation flags.
-- **Plots:** missing-sensor bars, reliability diagram, confusion matrix, F1 vs training frequency,
-  trust weights, run comparison.
+## Reproducing all experiments
 
-## Tests
+One command runs the full research study: three model variants, selection on validation data, three ablations, extra seeds and the final report.
 
-| File | Covers |
-|---|---|
-| `test_dataset.py` | schema check, NaN/-9999/saturation handling, LiDAR invalid points, missing ⇒ zeros + mask, train-only normalization, deterministic eval items, robustness options |
-| `test_splits.py` | **no site overlap** (5 seeds), full coverage, explicit sites, bad configs |
-| `test_encoders.py` | output shape of each encoder, finite output on missing inputs, LiDAR padding/permutation invariance, gradients |
-| `test_fusion.py` | trust range, fusion for all 7 sensor subsets (missing ⇒ weight 0, garbage-invariant), detach, full model |
-| `test_losses.py` / `test_training.py` | evidential, InfoNCE, focal, class-balanced weights/sampler, modality dropout, LR/KL schedules |
-| `test_smoke.py` | **2 epochs on 64 samples on CPU < 2 min** (≈4 s), bit-reproducible training, resume |
-| `test_evaluation.py` | hand-computed P/R/F1, ECE, top-k, end-to-end evaluation (missing + corrupted sensors) and report files |
+```bash
+python scripts/run_experiments.py           # about 3 hours on a CPU, much faster on a GPU
+python scripts/run_experiments.py --quick   # 5-minute check that the pipeline runs
+```
+
+Results are written to `outputs/experiments/`. Seeds are fixed, so re-running reproduces the same numbers.
+
+---
 
 ## Project structure
 
 ```
-configs/       default.yaml (all hyperparameters & paths) · experiments.yaml (variants & ablations)
-data/          synthetic_neon_mmtc.h5 (generated)
-src/data/      synthetic.py · inspect.py · dataset.py · splits.py · species_catalog.py · real_species.py · crown_dataset.py
-src/models/    encoders.py · quality.py · fusion.py · heads.py · model.py
-src/losses/    focal.py · evidential.py · contrastive.py · total.py
-src/training/  trainer.py · sampler.py · modality_dropout.py
-src/evaluation/ metrics.py · predict.py · evaluate.py · plots.py · report.py · predictor.py · predict_report.py
-src/utils/     common.py (config, seeding, device, logging)
-scripts/       make_synthetic_data.py · make_real_species_data.py · inspect_data.py · predict.py · train.py · evaluate.py · run_experiments.py
-tests/         111 pytest tests
-results/       RESULTS.md · summary.json · results_page.html · figures/ · final_model_best.pt
+configs/
+  default.yaml          settings for the research model
+  real_species.yaml     settings for the real-species model
+  experiments.yaml      variants and ablations for run_experiments.py
+
+src/
+  data/                 data generators, loaders, splits and cleaning
+  models/               encoders, quality estimator, fusion, heads, full model
+  losses/               focal, evidential, contrastive and combined losses
+  training/             training loop, class-balanced sampler, modality dropout
+  evaluation/           metrics, evaluation, plots, predictor and prediction report
+  utils/                config loading, seeding, device selection, logging
+
+scripts/
+  make_real_species_data.py   create the 20-species dataset
+  make_synthetic_data.py      create the 167-species dataset
+  inspect_data.py             show the contents of a data file
+  train.py                    train a model
+  evaluate.py                 evaluate a trained model
+  predict.py                  predict trees and build the HTML report
+  run_experiments.py          run every experiment
+
+tests/                  111 automated tests
+results/                trained models, result tables and figures
+examples/               six sample trees for predict.py
 ```
 
-## Limitations
+---
 
-- **Synthetic data only.** The site shift, the degradations and the cross-site augmentation are all simple
-  parametric families. The augmentation family also matches the simulated shift, so its benefit here
-  is an upper bound on what to expect from real NEON flight-line differences.
-- **Seeds.** Three seeds were run for the final model and its no-quality-estimator ablation; every other
-  configuration has one seed. Seed-to-seed spread on test accuracy is about ±0.01–0.02, so smaller differences are noise.
-- **Trust is a model-confidence signal.** It detects corruptions that make a sensor less informative in the
-  way the training data showed. It does **not** detect distribution shift to new sites on its own
-  (see Results).
-- The 167-way head cannot recognise species absent from the training sites (open-set recognition is out of scope).
-#   m u l t i m o d a l - t r e e - s p e c i e s - i d e n t i f i c a t i o n  
- 
+## Tests
+
+```bash
+python -m pytest -v
+```
+
+| Test file | What it checks |
+|---|---|
+| `test_dataset.py` | Data loading, handling of invalid values, normalisation fitted on training data only |
+| `test_splits.py` | No forest site appears in more than one split |
+| `test_encoders.py` | Output shapes, missing inputs, LiDAR point-order invariance |
+| `test_fusion.py` | Missing sensors always get a weight of zero, for all sensor combinations |
+| `test_losses.py`, `test_training.py` | Loss functions, balanced sampling, modality dropout |
+| `test_smoke.py` | 2 training epochs on 64 trees finish in under 2 minutes; results are reproducible |
+| `test_evaluation.py` | Metrics against hand-computed values and the full evaluation |
+| `test_real_species.py` | The real-species dataset layout and species ranges |
+| `test_predict.py` | The loader, the predictor and `predict.py` end to end |
+
+---
+
+## Limitations and future work
+
+- **Simulated sensor data.** The next step is to train and evaluate on real NEON airborne data.
+- **Real photos.** The model was trained on simulated crowns, so its predictions on real aerial photos are not meaningful yet.
+- **Unknown species.** The model can only choose among the species it was trained on. Detecting unknown species (open-set recognition) is a possible extension.
+- **Trust scores.** They make the model more explainable but did not improve accuracy here. Testing them on real sensor failures is future work.
+- **Seeds.** Only the main comparison was run with three seeds; other results come from a single run.
+
+---
+
+## Requirements
+
+Python 3.12, PyTorch 2.15.0, NumPy, h5py, PyYAML, matplotlib, Pillow and pytest. Exact versions are listed in `requirements.txt`.
